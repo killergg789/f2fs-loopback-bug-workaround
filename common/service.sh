@@ -15,7 +15,7 @@ fi
 
 mount -o remount,rw /cache
 
-if [ ! -f /cache/magisk_merge_img ] || [ ! -e $MPath ]; then
+if [ ! -f /cache/magisk_merge_img ] || [ ! -h $MPath ]; then
 	make_ext4fs -l 8M /cache/magisk_merge_img
 	ln -s /cache/magisk_merge_img $MPath
 	ln -s /cache/magisk_merge_img /data/magisk_merge.img

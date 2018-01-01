@@ -63,6 +63,9 @@ if $BOOTMODE; then
 	exit 0
 fi
 
+# $IMG symlink fix ###
+[ -h "$IMG" ] && mv "`readlink -f "$IMG"`" "$IMG"
+
 # Mount partitions
 mount_partitions
 
