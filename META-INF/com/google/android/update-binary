@@ -1,99 +1,222 @@
-#!/sbin/sh
-##########################################################################################
-#
-# Magisk Module Template Install Script
-# by topjohnwu
-#
-##########################################################################################
+#!/sbin/sh -x
+# F2FS Loopback Bug Workaround Installer
+# VR25 @ XDA Developers
 
 # Detect whether in boot mode
 ps | grep zygote | grep -v grep >/dev/null && BOOTMODE=true || BOOTMODE=false
 $BOOTMODE || ps -A 2>/dev/null | grep zygote | grep -v grep >/dev/null && BOOTMODE=true
+$BOOTMODE || id | grep -q 'uid=0' || BOOTMODE=true
 
-TMPDIR=/dev/tmp
-INSTALLER=$TMPDIR/install
-MAGISKBIN=/data/adb/magisk
+# Add Magisk busybox to PATH
+$BOOTMODE && export PATH="/sbin/.core/busybox:/dev/magisk/bin:$PATH"
 
 # Default permissions
 umask 022
 
-# Initial cleanup
-rm -rf $TMPDIR 2>/dev/null
-mkdir -p $INSTALLER
+##########################################################################################
+# Functions
+##########################################################################################
 
-# echo before loading util_functions
-ui_print() { echo "$1"; }
+ui_print() {
+  $BOOTMODE && echo -e "$1" || echo -e "ui_print $1\nui_print" >> /proc/self/fd/$OUTFD
+}
 
-require_new_magisk() {
-  ui_print "*******************************"
-  ui_print " Please install Magisk v15.0+! "
-  ui_print "*******************************"
-  exit 1
+grep_prop() {
+  REGEX="s/^$1=//p"
+  shift
+  FILES=$@
+  [ -z "$FILES" ] && FILES='/system/build.prop'
+  sed -n "$REGEX" $FILES 2>/dev/null | head -n 1
+}
+
+is_mounted() { mountpoint -q "$1"; }
+
+mount_image() {
+  ui_print "- Mounting $1 to $2"
+  [ -d "$2" ] || mkdir -p "$2"
+  mount "$1" "$2"
+}
+
+set_perm() {
+  chown $2:$3 "$1" || exit 1
+  chmod $4 "$1" || exit 1
+  [ -z "$5" ] && chcon 'u:object_r:system_file:s0' "$1" || chcon $5 "$1"
+}
+
+set_perm_recursive() {
+  find "$1" -type d 2>/dev/null | while read dir; do
+    set_perm "$dir" $2 $3 $4 $6
+  done
+  find "$1" -type f -o -type l 2>/dev/null | while read file; do
+    set_perm "$file" $2 $3 $5 $6
+  done
+}
+
+mktouch() {
+  mkdir -p ${1%/*} 2>/dev/null
+  [ -z "$2" ] && touch "$1" || echo "$2" > "$1"
+  chmod 644 $1
+}
+
+request_size_check() {
+  reqSizeM=`du -s $1 | cut -f1`
+  reqSizeM=$((reqSizeM / 1024 + 1))
+}
+
+request_zip_size_check() {
+  reqSizeM=`unzip -l "$1" | tail -n 1 | awk '{ print int($1 / 1048567 + 1) }'`
+}
+
+image_size_check() {
+  e2fsck -yf $1 >&2
+  curBlocks=`e2fsck -n $1 2>/dev/null | grep $1 | cut -d, -f3 | cut -d\  -f2`;
+  curUsedM=`echo "$curBlocks" | cut -d/ -f1`
+  curSizeM=`echo "$curBlocks" | cut -d/ -f1`
+  curFreeM=$(((curSizeM - curUsedM) * 4 / 1024))
+  curUsedM=$((curUsedM * 4 / 1024 + 1))
+  curSizeM=$((curSizeM * 4 / 1024))
 }
 
 ##########################################################################################
-# Environment
+# Flashable update-binary preparation
 ##########################################################################################
 
 OUTFD=$2
-ZIP="$3" ###
+ZIP="$3"
 
-mount /data 2>/dev/null
+readlink /proc/$$/fd/$OUTFD 2>/dev/null | grep /tmp >/dev/null
+if [ "$?" -eq "0" ]; then
+  OUTFD=0
 
-# Utility functions must exist
-[ -f $MAGISKBIN/util_functions.sh ] || require_new_magisk
-# Load utility fuctions
-. $MAGISKBIN/util_functions.sh
-
-# We can't alter magisk image live, use alternative image if required
-$BOOTMODE && IMG=/data/adb/magisk_merge.img
-# Always mount under tmp
-MOUNTPATH=$TMPDIR/magisk_img
-
-# Preperation for flashable zips
-get_outfd
-
-# Block installation in boot mode ###
-if $BOOTMODE; then
-	ui_print " "
-	ui_print "(i) Install from TWRP!"
-	ui_print "- If you're seeing this, either you're kidding or you don't need this module."
-	ui_print "- If your reasoning is different, I'm sorry."
-	ui_print " "
-	exit 0
+  for FD in `ls /proc/$$/fd`; do
+    readlink /proc/$$/fd/$FD 2>/dev/null | grep pipe >/dev/null
+    if [ "$?" -eq "0" ]; then
+      ps | grep " 3 $FD " | grep -v grep >/dev/null
+      if [ "$?" -eq "0" ]; then
+        OUTFD=$FD
+        break
+      fi
+    fi
+  done
 fi
 
-# $IMG symlink fix ###
-[ -h "$IMG" ] && mv "`readlink -f "$IMG"`" "$IMG"
+# Fix SuperSU.....
+#$BOOTMODE && $BINDIR/sepolicy-inject --live "allow fsck * * *"
 
-# Mount partitions
-mount_partitions
+# This path should work in any cases
+TMPDIR=/dev/tmp
 
-# Detect version and architecture
-api_level_arch_detect
+INSTALLER=$TMPDIR/install
+MOUNTPATH=$TMPDIR/magisk_img
+$BOOTMODE && IMGNAME=magisk_merge.img || IMGNAME=magisk.img
+[ -d /data/adb/magisk ] && IMG=/data/adb/$IMGNAME || IMG=/data/$IMGNAME
 
-# You can get the Android API version from $API, the CPU architecture from $ARCH
-# Useful if you are creating Android version / platform dependent mods
+if [ ! -d /data/adb/magisk ] && [ ! -d /data/magisk ]; then
+	ui_print " "
+	ui_print "(!) No Magisk installation found or installed version is not supported"
+	ui_print " "
+	exit 1
+fi
 
-# Setup busybox and binaries
-$BOOTMODE && boot_actions || recovery_actions
+# Initial cleanup
+rm -rf $TMPDIR 2>/dev/null
+mkdir -p $INSTALLER 2>/dev/null
+
+unzip -o "$ZIP" 'common/*' module.prop -d $INSTALLER >&2
+
+MODID="`grep_prop id $INSTALLER/module.prop`"
+TMP_MODPATH=$MOUNTPATH/$MODID
+MODPATH=$TMP_MODPATH
+
+# Find MODPATH
+if $BOOTMODE; then
+	for loop_device in /dev/block/loop*; do
+		if losetup $loop_device 2>/dev/null | grep -q '\(/data/.*magisk.img\)'; then
+			for MountPoint in $(grep $loop_device /proc/mounts | awk '{print $2}' | grep -v '/system'); do
+				if [ -d "$MountPoint/.core" ] || [ -d "$MountPoint/lost+found" ]; then
+					MountPoint=$MountPoint
+					MODPATH=$MountPoint/$MODID
+					mkdir -p $MODPATH 2>/dev/null
+					break 2
+				fi
+			done
+		fi
+	done
+
+	if [ ! -d "$MountPoint" ]; then
+	    echo -e "(!) Magisk mount point not found"
+		exit 1
+	fi
+
+  if ! is_mounted $MountPoint; then
+    ui_print "(!) Magisk is not activated!... abort"
+    exit 1
+  fi
+
+fi
 
 ##########################################################################################
-# Preparation
+# Configs
 ##########################################################################################
 
-# Extract common files
-unzip -o "$ZIP" module.prop config.sh 'common/*' -d $INSTALLER >&2
+# Set to true if you need to enable Magic Mount
+# Most mods would like it to be enabled
+AUTOMOUNT=false
 
-[ ! -f $INSTALLER/config.sh ] && abort "! Unable to extract zip file!"
-# Load configurations
-. $INSTALLER/config.sh
+# Set to true if you need to load system.prop
+PROPFILE=false
 
-# Check the installed magisk version
-MIN_VER=`grep_prop minMagisk $INSTALLER/module.prop`
-[ ! -z $MAGISK_VER_CODE -a $MAGISK_VER_CODE -ge $MIN_VER ] || require_new_magisk
-MODID=`grep_prop id $INSTALLER/module.prop`
-MODPATH=$MOUNTPATH/$MODID
+# Set to true if you need post-fs-data script
+POSTFSDATA=false
+
+# Set to true if you need late_start service script
+LATESTARTSERVICE=true
+
+ModVersion="`grep_prop version $INSTALLER/module.prop`"
+print_modname() {
+  ui_print "*****************************************"
+  ui_print "F2FS Loopback Bug Workaround $ModVersion"
+  ui_print "         VR25 @ XDA Developers          "
+  ui_print "*****************************************"
+}
+
+# List all directories you want to directly replace in the system
+# Check the documentations for more info about how Magic Mount works, and why you need this
+
+# This is an example
+REPLACE="
+/system/app/Youtube
+/system/priv-app/SystemUI
+/system/priv-app/Settings
+/system/framework
+"
+
+# Construct your own list here, it will override the example above
+# !DO NOT! remove this if you don't need to replace anything, leave it empty as it is now
+REPLACE="
+"
+
+set_permissions() {
+  # Only some special files require specific permissions
+  # The default permissions should be good enough for most cases
+
+  # Here are some examples for the set_perm functions:
+
+  # set_perm_recursive  <dirname>                <owner> <group> <dirpermission> <filepermission> <contexts> (default: u:object_r:system_file:s0)
+  # set_perm_recursive  $MODPATH/system/lib       0       0       0755            0644
+
+  # set_perm  <filename>                         <owner> <group> <permission> <contexts> (default: u:object_r:system_file:s0)
+  # set_perm  $MODPATH/system/bin/app_process32   0       2000    0755         u:object_r:zygote_exec:s0
+  # set_perm  $MODPATH/system/bin/dex2oat         0       2000    0755         u:object_r:dex2oat_exec:s0
+  # set_perm  $MODPATH/system/lib/libart.so       0       0       0644
+
+  # The following is default permissions, DO NOT remove
+  set_perm_recursive  $TMP_MODPATH  0  0  0755  0755
+}
+
+##########################################################################################
+# Main
+##########################################################################################
 
 # Print mod name
 print_modname
@@ -103,69 +226,180 @@ ui_print "******************************"
 ui_print "Powered by Magisk (@topjohnwu)"
 ui_print "******************************"
 
-##########################################################################################
-# Install
+ui_print "- Mounting /system(ro), /vendor(ro), /data, /cache"
+mount -o ro /system 2>/dev/null
+mount -o ro /vendor 2>/dev/null
+mount /data 2>/dev/null
+mount /cache 2>/dev/null
+
+if [ ! -f '/system/build.prop' ]; then
+  ui_print "(!) Failed: /system could not be mounted!"
+  exit 1
+fi
+
+API=`grep_prop ro.build.version.sdk`
+ABI=`grep_prop ro.product.cpu.abi | cut -c-3`
+ABI2=`grep_prop ro.product.cpu.abi2 | cut -c-3`
+ABILONG=`grep_prop ro.product.cpu.abi`
+
+ARCH=arm
+IS64BIT=false
+if [ "$ABI" = "x86" ]; then ARCH=x86; fi;
+if [ "$ABI2" = "x86" ]; then ARCH=x86; fi;
+if [ "$ABILONG" = "arm64-v8a" ]; then ARCH=arm64; IS64BIT=true; fi;
+if [ "$ABILONG" = "x86_64" ]; then ARCH=x64; IS64BIT=true; fi;
+
+# You can get the Android API version from $API, the CPU architecture from $ARCH
+# Useful if you are creating Android version / platform dependent mods
+
+if ! is_mounted /data; then
+  IMG=/cache/$IMGNAME
+  ui_print " "
+  ui_print "***********************************"
+  ui_print "*      !! Data unavailible !!     *"
+  ui_print "* Magisk detection is impossible  *"
+  ui_print "* Installation will still proceed *"
+  ui_print "*  But please make sure you have  *"
+  ui_print "*        Magisk installed!!       *"
+  ui_print "***********************************"
+  ui_print " "
+fi
+
 ##########################################################################################
 
-# Get the variable reqSizeM. Use your own method to determine reqSizeM if needed
+# Restore magisk.img backup
+if [ ! -f /cache/magisk_img ] && [ -f /data/magisk_img_bkp ]; then
+  ui_print "- Restoring magisk.img backup"
+  cp -a /data/magisk_img_bkp /cache/magisk_img
+fi
+
+# Block installation in BOOTMODE
+if $BOOTMODE; then
+	ui_print " "
+	ui_print "(!) Install from TRWP"
+	ui_print "- Either you didn't read the reference or you don't need this module"
+	ui_print " "
+	exit 1
+fi
+
+# Check whether cache is EXT4-formated
+if ! grep '/cache' /proc/mounts | grep -iq 'ext4'; then
+	ui_print " "
+	ui_print "(!) Your cache partition file system is not EXT4"
+	ui_print "- Either you didn't read the reference or you don't need this module"
+	ui_print " "
+	exit 1
+fi
+
+ui_print "- Implementing workaround"
+IMGC=/cache/magisk_img
+[ -f "$IMGC" ] || make_ext4fs -l 8M $IMGC
+mkdir /data/adb 2>/dev/null
+ln -s $IMGC /data/adb/magisk.img 2>/dev/null
+ln -s $IMGC /data/magisk.img 2>/dev/null
+
+##########################################################################################
+
 request_zip_size_check "$ZIP"
 
-# This function will mount $IMG to $MOUNTPATH, and resize the image based on $reqSizeM
-mount_magisk_img
+if [ -f "$IMG" ]; then
+  ui_print "- $IMG detected!"
+  image_size_check $IMG
+  if [ "$reqSizeM" -gt "$curFreeM" ]; then
+    SIZE=$(((reqSizeM + curUsedM) / 32 * 32 + 64))
+    ui_print "- Resizing $IMG to ${SIZE}M..."
+    resize2fs $IMG ${SIZE}M >&2
+  fi
+else
+  SIZE=$((reqSizeM / 32 * 32 + 64));
+  ui_print "- Creating $IMG with size ${SIZE}M"
+  make_ext4fs -l ${SIZE}M $IMG >&2
+fi
+
+mount_image $IMG $MOUNTPATH
+if ! is_mounted $MOUNTPATH; then
+  ui_print "(!) $IMG mount failed... abort"
+  exit 1
+fi
+
+##########################################################################################
+# Module space
+##########################################################################################
 
 # Create mod paths
-rm -rf $MODPATH 2>/dev/null
-mkdir -p $MODPATH
+rm -rf $TMP_MODPATH 2>/dev/null
+mkdir -p $TMP_MODPATH
 
-# Extract files to system. Use your own method if needed ###
+# Extract files
 #ui_print "- Extracting module files"
-#unzip -o "$ZIP" 'system/*' -d $MODPATH >&2
+#unzip -o "$ZIP" 'system/*' -d $TMP_MODPATH >&2
+
+##########################################################################################
 
 # Remove placeholder
-rm -f $MODPATH/system/placeholder 2>/dev/null
+rm -f $TMP_MODPATH/system/placeholder 2>/dev/null
 
 # Handle replace folders
 for TARGET in $REPLACE; do
-  mktouch $MODPATH$TARGET/.replace
+  mktouch $TMP_MODPATH$TARGET/.replace
 done
 
 # Auto Mount
-$AUTOMOUNT && touch $MODPATH/auto_mount
+if $AUTOMOUNT; then
+  mktouch $TMP_MODPATH/auto_mount
+fi
 
 # prop files
-$PROPFILE && cp -af $INSTALLER/common/system.prop $MODPATH/system.prop
+if $PROPFILE; then
+  cp -af $INSTALLER/common/system.prop $TMP_MODPATH/system.prop
+fi
 
 # Module info
-cp -af $INSTALLER/module.prop $MODPATH/module.prop
+cp -af $INSTALLER/module.prop $TMP_MODPATH/module.prop
 if $BOOTMODE; then
   # Update info for Magisk Manager
-  mktouch /sbin/.core/img/$MODID/update
-  cp -af $INSTALLER/module.prop /sbin/.core/img/$MODID/module.prop
+  mktouch $MODPATH/update
+  cp -af $INSTALLER/module.prop $MODPATH/module.prop
 fi
 
 # post-fs-data mode scripts
-$POSTFSDATA && cp -af $INSTALLER/common/post-fs-data.sh $MODPATH/post-fs-data.sh
+if $POSTFSDATA; then
+  cp -af $INSTALLER/common/post-fs-data.sh $TMP_MODPATH/post-fs-data.sh
+fi
 
 # service mode scripts
-$LATESTARTSERVICE && cp -af $INSTALLER/common/service.sh $MODPATH/service.sh
+if $LATESTARTSERVICE; then
+  cp -af $INSTALLER/common/service.sh $TMP_MODPATH/service.sh
+fi
 
 ui_print "- Setting permissions"
 set_permissions
 
-##########################################################################################
-# Finalizing
-##########################################################################################
+ui_print "- Unmounting partitions"
 
-# Unmount magisk image and shrink if possible
-unmount_magisk_img
+umount $MOUNTPATH
+for loop_device in /dev/block/loop*; do
+  if losetup $loop_device 2>/dev/null | grep -q "$IMG"; then
+    losetup -d $loop_device
+    break
+  fi
+done
+rmdir $MOUNTPATH
 
-# Handle magisk.img ###
-mount /cache 2>/dev/null
-mv "$IMG" /cache/magisk_img
-ln -s /cache/magisk_img "$IMG"
+# Shrink the image if possible
+image_size_check $IMG
+NEWDATASIZE=$((curUsedM / 32 * 32 + 32))
+if [ "$curSizeM" -gt "$NEWDATASIZE" ]; then
+  ui_print "- Shrinking $IMG to ${NEWDATASIZE}M..."
+  resize2fs $IMG ${NEWDATASIZE}M >&2
+fi
 
-$BOOTMODE || recovery_cleanup
-rm -rf $TMPDIR
+if ! $BOOTMODE; then
+  umount /system
+  umount /vendor 2>/dev/null
+fi
+
+[ "$IMG" = /data/adb/$IMGNAME ] && ln -s "$IMG" /data 2>/dev/null
 
 ui_print "- Done"
 exit 0
