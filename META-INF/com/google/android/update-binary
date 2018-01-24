@@ -45,10 +45,10 @@ set_perm() {
 
 set_perm_recursive() {
   find "$1" -type d 2>/dev/null | while read dir; do
-    set_perm "$dir" $2 $3 $4 $6
+	set_perm "$dir" $2 $3 $4 $6
   done
   find "$1" -type f -o -type l 2>/dev/null | while read file; do
-    set_perm "$file" $2 $3 $5 $6
+	set_perm "$file" $2 $3 $5 $6
   done
 }
 
@@ -89,14 +89,14 @@ if [ "$?" -eq "0" ]; then
   OUTFD=0
 
   for FD in `ls /proc/$$/fd`; do
-    readlink /proc/$$/fd/$FD 2>/dev/null | grep pipe >/dev/null
-    if [ "$?" -eq "0" ]; then
-      ps | grep " 3 $FD " | grep -v grep >/dev/null
-      if [ "$?" -eq "0" ]; then
-        OUTFD=$FD
-        break
-      fi
-    fi
+	readlink /proc/$$/fd/$FD 2>/dev/null | grep pipe >/dev/null
+	if [ "$?" -eq "0" ]; then
+	  ps | grep " 3 $FD " | grep -v grep >/dev/null
+	  if [ "$?" -eq "0" ]; then
+		OUTFD=$FD
+		break
+	  fi
+	fi
   done
 fi
 
@@ -144,13 +144,13 @@ if $BOOTMODE; then
 	done
 
 	if [ ! -d "$MountPoint" ]; then
-	    echo -e "(!) Magisk mount point not found"
+		echo -e "(!) Magisk mount point not found"
 		exit 1
 	fi
 
   if ! is_mounted $MountPoint; then
-    ui_print "(!) Magisk is not activated!... abort"
-    exit 1
+	ui_print "(!) Magisk is not activated!... abort"
+	exit 1
   fi
 
 fi
@@ -226,28 +226,28 @@ ui_print "******************************"
 ui_print "Powered by Magisk (@topjohnwu)"
 ui_print "******************************"
 
-ui_print "- Mounting /system(ro), /vendor(ro), /data, /cache"
-mount -o ro /system 2>/dev/null
-mount -o ro /vendor 2>/dev/null
+ui_print "- Mounting partitions"
+# mount -o ro /system 2>/dev/null
+# mount -o ro /vendor 2>/dev/null
 mount /data 2>/dev/null
 mount /cache 2>/dev/null
 
-if [ ! -f '/system/build.prop' ]; then
-  ui_print "(!) Failed: /system could not be mounted!"
-  exit 1
-fi
+# if [ ! -f '/system/build.prop' ]; then
+#   ui_print "(!) Failed: /system could not be mounted!"
+#   exit 1
+# fi
 
-API=`grep_prop ro.build.version.sdk`
-ABI=`grep_prop ro.product.cpu.abi | cut -c-3`
-ABI2=`grep_prop ro.product.cpu.abi2 | cut -c-3`
-ABILONG=`grep_prop ro.product.cpu.abi`
+# API=`grep_prop ro.build.version.sdk`
+# ABI=`grep_prop ro.product.cpu.abi | cut -c-3`
+# ABI2=`grep_prop ro.product.cpu.abi2 | cut -c-3`
+# ABILONG=`grep_prop ro.product.cpu.abi`
 
-ARCH=arm
-IS64BIT=false
-if [ "$ABI" = "x86" ]; then ARCH=x86; fi;
-if [ "$ABI2" = "x86" ]; then ARCH=x86; fi;
-if [ "$ABILONG" = "arm64-v8a" ]; then ARCH=arm64; IS64BIT=true; fi;
-if [ "$ABILONG" = "x86_64" ]; then ARCH=x64; IS64BIT=true; fi;
+# ARCH=arm
+# IS64BIT=false
+# if [ "$ABI" = "x86" ]; then ARCH=x86; fi;
+# if [ "$ABI2" = "x86" ]; then ARCH=x86; fi;
+# if [ "$ABILONG" = "arm64-v8a" ]; then ARCH=arm64; IS64BIT=true; fi;
+# if [ "$ABILONG" = "x86_64" ]; then ARCH=x64; IS64BIT=true; fi;
 
 # You can get the Android API version from $API, the CPU architecture from $ARCH
 # Useful if you are creating Android version / platform dependent mods
@@ -267,29 +267,35 @@ fi
 
 ##########################################################################################
 
+# Block installation in BOOTMODE
+if $BOOTMODE; then
+  ui_print " "
+  ui_print "(!) Install from TRWP"
+  ui_print "- Either you didn't read the reference or you don't need this module"
+  ui_print " "
+  exit 1
+fi
+
+# Check whether cache is EXT4-formated
+if ! grep '/cache' /proc/mounts | grep -iq 'ext4'; then
+  ui_print " "
+  ui_print "(!) Your cache partition file system is not EXT4"
+  ui_print "- Either you didn't read the reference or you don't need this module"
+  ui_print " "
+  exit 1
+fi
+
 # Restore magisk.img backup
 if [ ! -f /cache/magisk_img ] && [ -f /data/magisk_img_bkp ]; then
   ui_print "- Restoring magisk.img backup"
   cp -a /data/magisk_img_bkp /cache/magisk_img
 fi
 
-# Block installation in BOOTMODE
-if $BOOTMODE; then
-	ui_print " "
-	ui_print "(!) Install from TRWP"
-	ui_print "- Either you didn't read the reference or you don't need this module"
-	ui_print " "
-	exit 1
-fi
-
-# Check whether cache is EXT4-formated
-if ! grep '/cache' /proc/mounts | grep -iq 'ext4'; then
-	ui_print " "
-	ui_print "(!) Your cache partition file system is not EXT4"
-	ui_print "- Either you didn't read the reference or you don't need this module"
-	ui_print " "
-	exit 1
-fi
+# Remove original image files
+ui_print "- Removing original Magisk image files"
+for e in $(find /data -name magisk*.img 2>/dev/null); do
+	[ ! -h "$e" ] && rm "$e" 2>/dev/null
+done
 
 ui_print "- Implementing workaround"
 IMGC=/cache/magisk_img
@@ -306,9 +312,9 @@ if [ -f "$IMG" ]; then
   ui_print "- $IMG detected!"
   image_size_check $IMG
   if [ "$reqSizeM" -gt "$curFreeM" ]; then
-    SIZE=$(((reqSizeM + curUsedM) / 32 * 32 + 64))
-    ui_print "- Resizing $IMG to ${SIZE}M..."
-    resize2fs $IMG ${SIZE}M >&2
+	SIZE=$(((reqSizeM + curUsedM) / 32 * 32 + 64))
+	ui_print "- Resizing $IMG to ${SIZE}M..."
+	resize2fs $IMG ${SIZE}M >&2
   fi
 else
   SIZE=$((reqSizeM / 32 * 32 + 64));
@@ -380,8 +386,8 @@ ui_print "- Unmounting partitions"
 umount $MOUNTPATH
 for loop_device in /dev/block/loop*; do
   if losetup $loop_device 2>/dev/null | grep -q "$IMG"; then
-    losetup -d $loop_device
-    break
+	losetup -d $loop_device
+	break
   fi
 done
 rmdir $MOUNTPATH
@@ -394,10 +400,10 @@ if [ "$curSizeM" -gt "$NEWDATASIZE" ]; then
   resize2fs $IMG ${NEWDATASIZE}M >&2
 fi
 
-if ! $BOOTMODE; then
-  umount /system
-  umount /vendor 2>/dev/null
-fi
+# if ! $BOOTMODE; then
+#   umount /system
+#   umount /vendor 2>/dev/null
+# fi
 
 [ "$IMG" = /data/adb/$IMGNAME ] && ln -s "$IMG" /data 2>/dev/null
 

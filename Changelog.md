@@ -1,3 +1,7 @@
+**2018.1.24 (201801240)**
+- Automatically find and remove original Magisk image files so that users don't have to
+- General optimizations
+
 **2018.1.14 (201801140)**
 - Automatically backup (on boot) & restore (on install/update) /cache/magisk_img -- backup file: /data/magisk_img_bkp
 - Better device compatibility, regardless of TWRP F2FS patching status
